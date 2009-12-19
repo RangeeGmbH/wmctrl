@@ -67,6 +67,7 @@ Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 "  -r <WIN> -N <STR>    Set the name (long title) of the window.\n" \
 "  -r <WIN> -I <STR>    Set the icon name (short title) of the window.\n" \
 "  -r <WIN> -T <STR>    Set both the name and the icon name of the window.\n" \
+"  -r <WIN> -L          List information about the window.\n" \
 "  -k (on|off)          Activate or deactivate window manager's\n" \
 "                       \"showing the desktop\" mode. Many window managers\n" \
 "                       do not implement this mode.\n" \
@@ -220,6 +221,7 @@ static gchar *get_property (Display *disp, Window win,
         Atom xa_prop_type, gchar *prop_name, unsigned long *size);
 static void init_charset(void);
 static int window_move_resize (Display *disp, Window win, char *arg);
+static void display_window (Display *disp, Window win, int max_client_machine_len);
 static int window_state (Display *disp, Window win, char *arg);
 static Window Select_Window(Display *dpy);
 static Window get_active_window(Display *dpy);
@@ -267,7 +269,7 @@ int main (int argc, char **argv) { /* {{{ */
         }
     }
    
-    while ((opt = getopt(argc, argv, "FGVvhlupidjmxa:r:s:c:t:w:k:o:n:g:e:y:b:z:E:N:I:T:R:")) != -1) {
+    while ((opt = getopt(argc, argv, "FGVvhlupidjmxa:r:s:c:t:w:k:o:n:g:e:y:b:z:E:N:I:T:R:L:")) != -1) {
         missing_option = 0;
         switch (opt) {
             case 'F':
@@ -299,7 +301,7 @@ int main (int argc, char **argv) { /* {{{ */
             case 'r':
                 options.param_window = optarg;
                 break; 
-            case 't': case 'e': case 'b': case 'N': case 'I': case 'T': case 'y':
+            case 't': case 'e': case 'b': case 'N': case 'I': case 'T': case 'y': case 'L':
                 options.param = optarg;
                 action = opt;
                 break;
@@ -362,7 +364,7 @@ int main (int argc, char **argv) { /* {{{ */
             ret = wm_info(disp);
             break;
         case 'a': case 'c': case 'R': case 'z': case 'E':
-        case 't': case 'e': case 'b': case 'N': case 'I': case 'T': case 'y':
+        case 't': case 'e': case 'b': case 'N': case 'I': case 'T': case 'y': case 'L':
             if (! options.param_window) {
                 fputs("No window was specified.\n", stderr);
                 return EXIT_FAILURE;
@@ -887,6 +889,69 @@ static int window_say_title (Display *disp, Window win) {
     return EXIT_SUCCESS;
 }
 
+static void display_window (Display *disp, Window win, int max_client_machine_len) {/*{{{*/
+    gchar *title_utf8 = get_window_title(disp, win); /* UTF8 */
+    gchar *title_out = get_output_str(title_utf8, TRUE);
+    gchar *client_machine;
+    gchar *class_out = get_window_class(disp, win); /* UTF8 */
+    unsigned long *pid;
+    unsigned long *desktop;
+    int x, y, junkx, junky;
+    unsigned int wwidth, wheight, bw, depth;
+    Window junkroot;
+
+    /* desktop ID */
+    if ((desktop = (unsigned long *)get_property(disp, win,
+            XA_CARDINAL, "_NET_WM_DESKTOP", NULL)) == NULL) {
+        desktop = (unsigned long *)get_property(disp, win,
+                XA_CARDINAL, "_WIN_WORKSPACE", NULL);
+    }
+
+    /* client machine */
+    client_machine = get_property(disp, win,
+            XA_STRING, "WM_CLIENT_MACHINE", NULL);
+  
+    /* pid */
+    pid = (unsigned long *)get_property(disp, win,
+            XA_CARDINAL, "_NET_WM_PID", NULL);
+
+  /* geometry */
+    XGetGeometry (disp, win, &junkroot, &junkx, &junky,
+                      &wwidth, &wheight, &bw, &depth);
+    XTranslateCoordinates (disp, win, junkroot, junkx, junky,
+                          &x, &y, &junkroot);
+  
+    /* special desktop ID -1 means "all desktops", so we 
+      have to convert the desktop value to signed long */
+    printf("0x%.8lx %2ld", win, 
+            desktop ? (signed long)*desktop : 0);
+    if (options.show_pid) {
+      printf(" %-6lu", pid ? *pid : 0);
+    }
+    if (options.show_geometry) {
+      printf(" %-4d %-4d %-4d %-4d", x, y, wwidth, wheight);
+    }
+    if (options.show_class) {
+        printf(" %-20s ", class_out ? class_out : "N/A");
+    }
+
+    if (max_client_machine_len == 0) {
+      max_client_machine_len = strlen(client_machine);
+    }
+
+    printf(" %*s %s\n",
+          max_client_machine_len,
+          client_machine ? client_machine : "N/A",
+          title_out ? title_out : "N/A"
+    );
+    g_free(title_utf8);
+    g_free(title_out);
+    g_free(desktop);
+    g_free(client_machine);
+    g_free(class_out);
+    g_free(pid);
+}/*}}}*/
+
 static int action_window (Display *disp, Window win, char mode) {/*{{{*/
     int rv;
     p_verbose("Using window: 0x%.8lx\n", win);
@@ -896,6 +961,10 @@ static int action_window (Display *disp, Window win, char mode) {/*{{{*/
 
         case 'c':
             return close_window(disp, win);
+
+        case 'L':
+            display_window(disp, win, 0);
+            return EXIT_SUCCESS;
 
         case 'e':
             /* resize/move the window around the desktop => -r -e */
@@ -1342,62 +1411,7 @@ static int list_windows (Display *disp) {/*{{{*/
     
     /* print the list */
     for (i = 0; i < client_list_size / sizeof(Window); i++) {
-        gchar *title_utf8 = get_window_title(disp, client_list[i]); /* UTF8 */
-        gchar *title_out = get_output_str(title_utf8, TRUE);
-        gchar *client_machine;
-        gchar *class_out = get_window_class(disp, client_list[i]); /* UTF8 */
-        unsigned long *pid;
-        unsigned long *desktop;
-        int x, y, junkx, junky;
-        unsigned int wwidth, wheight, bw, depth;
-        Window junkroot;
-
-        /* desktop ID */
-        if ((desktop = (unsigned long *)get_property(disp, client_list[i],
-                XA_CARDINAL, "_NET_WM_DESKTOP", NULL)) == NULL) {
-            desktop = (unsigned long *)get_property(disp, client_list[i],
-                    XA_CARDINAL, "_WIN_WORKSPACE", NULL);
-        }
-
-        /* client machine */
-        client_machine = get_property(disp, client_list[i],
-                XA_STRING, "WM_CLIENT_MACHINE", NULL);
-       
-        /* pid */
-        pid = (unsigned long *)get_property(disp, client_list[i],
-                XA_CARDINAL, "_NET_WM_PID", NULL);
-
-	    /* geometry */
-        XGetGeometry (disp, client_list[i], &junkroot, &junkx, &junky,
-                          &wwidth, &wheight, &bw, &depth);
-        XTranslateCoordinates (disp, client_list[i], junkroot, junkx, junky,
-                               &x, &y, &junkroot);
-      
-        /* special desktop ID -1 means "all desktops", so we 
-           have to convert the desktop value to signed long */
-        printf("0x%.8lx %2ld", client_list[i], 
-                desktop ? (signed long)*desktop : 0);
-        if (options.show_pid) {
-           printf(" %-6lu", pid ? *pid : 0);
-        }
-        if (options.show_geometry) {
-           printf(" %-4d %-4d %-4d %-4d", x, y, wwidth, wheight);
-        }
-		if (options.show_class) {
-		   printf(" %-20s ", class_out ? class_out : "N/A");
-		}
-
-        printf(" %*s %s\n",
-              max_client_machine_len,
-              client_machine ? client_machine : "N/A",
-              title_out ? title_out : "N/A"
-		);
-        g_free(title_utf8);
-        g_free(title_out);
-        g_free(desktop);
-        g_free(client_machine);
-        g_free(class_out);
-        g_free(pid);
+        display_window(disp, client_list[i], max_client_machine_len);
     }
     g_free(client_list);
    
