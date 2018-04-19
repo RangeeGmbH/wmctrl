@@ -1,4 +1,4 @@
-wmctrl (1.07-7-0rangee1) rangeeos; urgency=medium
+wmctrl (1.07-7-0rangeeos1) rangeeos; urgency=medium
 
   * Apply patch for window decorations by Ralf Neupert.
 
